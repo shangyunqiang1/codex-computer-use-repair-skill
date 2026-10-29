@@ -1,0 +1,116 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: Windows x64 (${{ matrix.configuration }})
+    runs-on: windows-2022
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [release, trace]
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      BUILD_CONFIGURATION: ${{ matrix.configuration }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Choose package version
+        id: version
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+              $version = $env:GITHUB_REF_NAME
+              if ($version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$') {
+                  throw 'Release tags must use vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-prerelease.'
+              }
+          } else {
+              $version = 'ci-{0}-{1}' -f $env:GITHUB_RUN_NUMBER, $env:GITHUB_SHA.Substring(0, 7)
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Build and run COM and dispatch unit tests
+        run: .\capture-compat\build.ps1 -Trace:($env:BUILD_CONFIGURATION -eq 'trace')
+
+      - name: Test installation and removal
+        run: .\capture-compat\tests\install_tests.ps1
+
+      - name: Package binaries, source, and documentation
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: .\capture-compat\package.ps1 -Version $env:PACKAGE_VERSION -Trace:($env:BUILD_CONFIGURATION -eq 'trace')
+
+      - name: Verify archive and installation from extracted files
+        run: |
+          $archives = @(Get-ChildItem -LiteralPath .\artifacts -Filter *.zip -File)
+          if ($archives.Count -ne 1) { throw 'Expected exactly one package for this build.' }
+          .\capture-compat\tests\package_tests.ps1 -ArchivePath $archives[0].FullName
+
+      - name: Upload downloadable build artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packages-windows-x64-${{ matrix.configuration }}
+          path: |
+            artifacts/*.zip
+            artifacts/*.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  release:
+    name: Publish tagged release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download tested packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: packages-windows-x64-*
+          merge-multiple: true
+          path: artifacts
+
+      - name: Verify checksums and publish release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(artifacts/*.zip)
+          checksums=(artifacts/*.sha256)
+          if [[ ${#archives[@]} -ne 2 || ${#checksums[@]} -ne 2 ]]; then
+            echo 'Expected release and trace ZIPs and their checksum files.' >&2
+            exit 1
+          fi
+          (cd artifacts && sha256sum --check -- *.sha256)
+          options=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            options+=(--prerelease --latest=false)
+          fi
+          gh release create "$RELEASE_TAG" "${archives[@]}" "${checksums[@]}" \
+            --verify-tag --title "$RELEASE_TAG" --generate-notes "${options[@]}"

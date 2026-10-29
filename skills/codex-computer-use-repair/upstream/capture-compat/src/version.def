@@ -1,0 +1,20 @@
+LIBRARY version
+EXPORTS
+    GetFileVersionInfoA=Proxy0 @1
+    GetFileVersionInfoByHandle=Proxy1 @2
+    GetFileVersionInfoExA=Proxy2 @3
+    GetFileVersionInfoExW=Proxy3 @4
+    GetFileVersionInfoSizeA=Proxy4 @5
+    GetFileVersionInfoSizeExA=Proxy5 @6
+    GetFileVersionInfoSizeExW=Proxy6 @7
+    GetFileVersionInfoSizeW=Proxy7 @8
+    GetFileVersionInfoW=Proxy8 @9
+    VerFindFileA=Proxy9 @10
+    VerFindFileW=Proxy10 @11
+    VerInstallFileA=Proxy11 @12
+    VerInstallFileW=Proxy12 @13
+    VerLanguageNameA=Proxy13 @14
+    VerLanguageNameW=Proxy14 @15
+    VerQueryValueA=Proxy15 @16
+    VerQueryValueW=Proxy16 @17
+    CodexCaptureCompatGetStatus @100
